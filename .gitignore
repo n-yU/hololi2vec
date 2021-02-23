@@ -1,0 +1,6 @@
+venv
+.DS_Store
+twitter.key
+
+data/*
+!data/hololive_members.csv
