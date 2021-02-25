@@ -90,7 +90,7 @@ class Holomem:
             # APIを利用したツイートデータ取得
             tweets = [
                 tweet for tweet in tweepy.Cursor(api.user_timeline,
-                                                 screen_name=self.userId, include_rts=False).items(self.n_tweet)]
+                                                 screen_name=self.userId, include_rts=True).items(self.n_tweet)]
             if save:
                 with open(self.tweets_path, mode='wb') as f:
                     pickle.dump(tweets, f)
@@ -122,7 +122,7 @@ class Holomem:
 
         if tweets_df_path.exists():
             # 既存データフレーム読み込み
-            tweets_df = pd.read_csv(tweets_df_path, sep='\t', index_col=0)
+            tweets_df = pd.read_csv(tweets_df_path, sep='\t', index_col=0, parse_dates=[2])
         else:
             # ツイートデータからデータフレーム作成
             # （ツイートデータのツイート数は上限に達することでn_tweetより少なくなることがあるため，
