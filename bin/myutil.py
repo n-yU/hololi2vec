@@ -1,15 +1,20 @@
 import os
-import logging
-from typing import Tuple
+from typing import Tuple, Union
 from pathlib import Path
 
 
 PROJECT_PATH = Path(__file__).resolve().parents[1]
 
-# logging config
-# formatter = '[hololi2vec:myutil] %(message)s'
-formatter = '[hololi2vec:{}] %(message)s'.format(Path(__file__).stem)
-logging.basicConfig(level=logging.INFO, format=formatter)
+
+def log(msg: Union[str, Path], exception=False) -> str:
+    suffix = '[{}] '.format(Path(__name__))
+    if isinstance(msg, Path):
+        msg = str(msg)
+
+    if exception:
+        Exception(suffix + msg)
+    else:
+        print(suffix + msg)
 
 
 def load_twitter_api_keys() -> Tuple[str, str, str, str]:
