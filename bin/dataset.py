@@ -227,64 +227,99 @@ class Hololive:
     """
 
     def __init__(self, userIds: np.ndarray, n_tweet: int, fname: str) -> None:
+        """インスタンス化
+
+        Args:
+            userIds (np.ndarray): Twitter ID（ユーザID）
+            n_tweet (int): 取得ツイート数
+            fname (str): ファイル名接頭辞
+        """
         self.userIds = userIds
         self.n_tweet = n_tweet
         self.fname = fname
+
+        # userIdsで指定したホロメンのHolomem.dfを集約した辞書取得（キーはユーザID）
         self.tweets_dfs = self.get_tweets_dfs()
+        # tweets_dfsのデータフレームを連結＆時系列順にソートしたデータフレームを取得
         self.all_user_tweets_df = self.get_all_user_tweets_df()
 
     def get_tweets_dfs(self) -> Dict[str, Holomem]:
+        """userIdsで指定したホロメンのHolomem.dfを集約した辞書を取得する
+
+        Returns:
+            Dict[str, Holomem]: データフレーム集約辞書
+        """
         tweets_dfs = dict()
         for userId in self.userIds:
             holomem = Holomem(userId=userId, n_tweet=self.n_tweet, load=True, verbose=False, preview=False)
+            # 時系列ソート -> 欠損行削除 -> インデックスリセット
             tweets_dfs[userId] = holomem.df.iloc[::-1].dropna(how='any', axis=0).reset_index(drop=True)
 
         return tweets_dfs
 
     def get_all_user_tweets_df(self) -> pd.core.frame.DataFrame:
+        """tweets_dfsのデータフレームを連結＆時系列順にソートしたデータフレームを取得する
+
+        Returns:
+            pd.core.frame.DataFrame: 連結データフレーム
+        """
         dfs = self.tweets_dfs.values()
+        # 時系列ソート -> インデックスリセット
         all_user_tweets_df = pd.concat(dfs, axis=0).sort_values(
             ['timestamp', 'userId'], ascending=[True, True]).reset_index(drop=True)
         return all_user_tweets_df
 
     def __wakatigaki(self) -> None:
+        """[private] ツイートテキストの分かち書きを行う
+        """
+        # MeCab辞書 -> NEologd
         neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
-        one_word_tweet_idx = []
+        one_word_tweet_idx = []  # テキストが2単語未満のツイートのインデックス
         all_user_tweets_df = self.all_user_tweets_df.copy()
 
+        # 分かち書き結果ファイルが既に存在 -> 削除して作成し直す
         if self.wakatigaki_path.exists():
             self.wakatigaki_path.unlink()
 
         with open(self.wakatigaki_path, mode='a', encoding='utf-8') as f:
             for tweet in all_user_tweets_df.itertuples():
                 idx, text = tweet.Index, tweet.text
-                neologd_text = neologd.parse(text)
+                neologd_text = neologd.parse(text)  # Chasen形式で分かち書き
+                # 単語をリスト形式で追加（品詞='記号-一般'・EOF除く）
                 wakati_words = [word.split('\t')[0] for word in neologd_text.split('\n')
                                 if len(word.split('\t')) == 6 and word.split('\t')[3] != '記号-一般']
 
+                # ツイートを構成する単語数が2未満 -> one_word_tweet_idxに追加
                 if len(wakati_words) < 2:
                     one_word_tweet_idx.append(idx)
                     continue
 
+                # 単語ごとにスペース区切り，ツイートごとに改行区切りでファイル書き込み
                 wakati_text = ' '.join(wakati_words)
                 f.write(wakati_text)
                 f.write('\n')
 
+        # one_word_tweet_idxのインデックスに対応する行（ツイート）をall_user_tweets_dfから削除
         all_user_tweets_df.drop(index=one_word_tweet_idx, inplace=True)
         self.all_user_tweets_df = all_user_tweets_df
 
     def split_data(self, date: dt, save=True, verbose=False) -> Tuple[
             pd.core.frame.DataFrame, pd.core.frame.DataFrame]:
-        self.change_date(date=date, verbose=False)
-        self.__wakatigaki()
+        """データフレームを訓練・テストセットに分割する
+
+        Args:
+            date (dt): 分割日時
+            save (bool, optional): 分割データフレームのtsv形式での保存. Defaults to True.
+            verbose (bool, optional): 保存パスなどの情報出力. Defaults to False.
+
+        Returns:
+            Tuple[ pd.core.frame.DataFrame, pd.core.frame.DataFrame]: 訓練・テストセット（データフレーム）
+        """
+        self.change_date(date=date, verbose=False)  # 分割日設定（保存パス指定）
+        self.__wakatigaki()                         # ツイートテキストの分かち書き
         all_user_tweets_df = self.all_user_tweets_df.copy()
 
-        date_str = self.date.strftime('%Y%m%d')
-        self.train_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_train.tsv'.format(
-            self.fname, self.n_tweet, date_str))
-        self.test_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_test.tsv'.format(
-            self.fname, self.n_tweet, date_str))
-
+        # all_user_tweets_dfの分割（分割日時上のツイートはテストセットに入る）
         train_df = all_user_tweets_df[all_user_tweets_df['timestamp'] < date]
         test_df = all_user_tweets_df[all_user_tweets_df['timestamp'] >= date]
 
@@ -295,10 +330,10 @@ class Hololive:
         self.train_df = train_df
         self.test_df = test_df
 
+        # 訓練セットに対応するように分かち書き結果ファイルの末尾（テストセット部）をカット
         with open(self.wakatigaki_path, mode='r', encoding='utf-8') as f:
             wakati_text = f.readlines()
         wakati_text_train = ''.join(wakati_text[:train_df.shape[0]])
-
         with open(self.wakatigaki_path, mode='w', encoding='utf-8') as f:
             f.write(wakati_text_train)
 
@@ -311,10 +346,19 @@ class Hololive:
         return train_df, test_df
 
     def __get_session_data(self, df: pd.core.frame.DataFrame) -> List[Tuple[int, str, str, dt]]:
+        """ツイートデータフレームからセッションデータ形式のリスト（session_data）を取得する
+
+        Args:
+            df (pd.core.frame.DataFrame): ツイートデータフレーム
+
+        Returns:
+            List[Tuple[int, str, str, dt]]: セッションデータ形式のリスト
+        """
         neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
         session_data = []
 
         for tweet in tqdm(df.itertuples(), total=df.shape[0]):
+            # 各ツイートを単語ごとに行を分けてログを作成 -> session_dataに追加
             neologd_text = neologd.parse(tweet.text)
             words = [word.split('\t')[0] for word in neologd_text.split('\n')
                      if len(word.split('\t')) == 6 and word.split('\t')[3] != '記号-一般']
@@ -326,10 +370,24 @@ class Hololive:
         return session_data
 
     def create_session_df(self, train_test=[True, True], save=True, verbose=False
-                          ) -> Union[pd.core.frame.DataFrame, Tuple[pd.core.frame.DataFrame, pd.core.frame.DataFrame]]:
+                          ) -> Union[pd.core.frame.DataFrame,
+                                     Tuple[pd.core.frame.DataFrame, pd.core.frame.DataFrame]]:
+        """セッションデータを作成する
+
+        Args:
+            train_test (list, optional): Trueに設定したデータセットからそれぞれセッションデータを作成する. \
+                Defaults to [True, True].
+            save (bool, optional): セッションデータのcsv形式での保存. Defaults to True.
+            verbose (bool, optional): 保存パスなどの情報出力. Defaults to False.
+
+        Returns:
+            Union[pd.core.frame.DataFrame, Tuple[pd.core.frame.DataFrame, pd.core.frame.DataFrame]]: \
+                train_testの指定に対応するセッションデータ
+        """
         train_df, test_df = self.train_df.copy(), self.test_df.copy()
         session_df_columns = ['tweetId', 'userId', 'word', 'timestamp']
 
+        # セッションデータ形式のリストをデータフレーム形式に変換
         if train_test[0]:
             train_session_data = self.__get_session_data(df=train_df)
             train_session_df = pd.DataFrame(train_session_data, columns=session_df_columns)
@@ -362,10 +420,21 @@ class Hololive:
             log('train_testは必ずどちらかはTrueにしてください', exception=True)
 
     def __calc_session_len(self, df: pd.core.frame.DataFrame) -> Tuple[float, int, int]:
+        """[private] セッションデータのセッション長の平均・最大・最小を計算する
+
+        Args:
+            df (pd.core.frame.DataFrame): [description]
+
+        Returns:
+            Tuple[float, int, int]: [description]
+        """
+        # tweetIdでグループ化 -> 各グループのデータフレームのサイズをリストに追加
         sessions_len = np.array([tId_df.shape[0] for _, tId_df in df.groupby('tweetId')])
         return np.mean(sessions_len), np.max(sessions_len), np.min(sessions_len)
 
     def show_session_len(self) -> None:
+        """セッションデータのセッション長の平均・最大・最小の計算結果を表示する
+        """
         if self.train_session_df is not None:
             train_session_df = self.train_session_df.copy()
             avg_len, max_len, min_len = self.__calc_session_len(train_session_df)
@@ -378,23 +447,31 @@ class Hololive:
             print('Average:{0} / Max:{1} / Min:{2}'.format(avg_len, max_len, min_len))
 
     def change_date(self, date: dt, verbose=False) -> None:
+        """分割日時と保存パスを変更する
+
+        Args:
+            date (dt): 分割日時
+            verbose (bool, optional): 保存パスなどの情報出力. Defaults to False.
+        """
+        # 変更前の分割日時を保持
         if 'date' in vars(self).keys():
             prv_date = self.date
         else:
             prv_date = None
         self.date = date
-        date_str = date.strftime('%Y%m%d')
+        date_str = date.strftime('%Y%m%d')  # datetimeの出力形式指定
 
+        # ファイル名: ${fname}_${n_tweet}_${date}_{train/test}_{session}
         self.wakatigaki_path = Path(prj_path, 'data/wakatigaki/{0}_{1}_{2}.txt'.format(
-            self.fname, self.n_tweet, date_str))
+            self.fname, self.n_tweet, date_str))    # 分かち書き結果 (txt)
         self.train_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_train.tsv'.format(
-            self.fname, self.n_tweet, date_str))
+            self.fname, self.n_tweet, date_str))    # ツイートデータ: 訓練セット (tsv)
         self.test_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_test.tsv'.format(
-            self.fname, self.n_tweet, date_str))
+            self.fname, self.n_tweet, date_str))    # ツイートデータ: テストセット (tsv)
         self.train_session_df_path = Path(prj_path, 'data/session/{}'.format(
-            self.train_df_path.stem + '_session.csv'))
+            self.train_df_path.stem + '_session.csv'))  # セッションデータ: 訓練セット (csv)
         self.test_session_df_path = Path(prj_path, 'data/session/{}'.format(
-            self.test_df_path.stem + '_session.csv'))
+            self.test_df_path.stem + '_session.csv'))   # セッションデータ: テストセット (csv)
 
         if verbose:
             if prv_date is None:
