@@ -1,6 +1,9 @@
 venv
+mecab-ipadic-neologd
 .DS_Store
 twitter.key
+.ipynb_checkpoints
+__pycache__/
 
 data/*
 !data/hololive_members.csv

@@ -1,11 +1,16 @@
 from pathlib import Path
-from typing import List, Union, Tuple
+from typing import List, Union, Tuple, Dict
 import pickle
 import re
+from datetime import datetime as dt
+from tqdm import tqdm
+
 import pandas as pd
+import numpy as np
 import tweepy
 import emoji
 import neologdn
+import MeCab
 
 import myutil
 
@@ -215,3 +220,185 @@ def format_tweet_text(tweet_text: str, return_original=False) -> Union[str, Tupl
         return formatted_tweet_text, tweet_text
     else:
         return formatted_tweet_text
+
+
+class Hololive:
+    """ホロライブメンバーのクラスHolomemの持つデータを集約する
+    """
+
+    def __init__(self, userIds: np.ndarray, n_tweet: int, fname: str) -> None:
+        self.userIds = userIds
+        self.n_tweet = n_tweet
+        self.fname = fname
+        self.tweets_dfs = self.get_tweets_dfs()
+        self.all_user_tweets_df = self.get_all_user_tweets_df()
+
+    def get_tweets_dfs(self) -> Dict[str, Holomem]:
+        tweets_dfs = dict()
+        for userId in self.userIds:
+            holomem = Holomem(userId=userId, n_tweet=self.n_tweet, load=True, verbose=False, preview=False)
+            tweets_dfs[userId] = holomem.df.iloc[::-1].dropna(how='any', axis=0).reset_index(drop=True)
+
+        return tweets_dfs
+
+    def get_all_user_tweets_df(self) -> pd.core.frame.DataFrame:
+        dfs = self.tweets_dfs.values()
+        all_user_tweets_df = pd.concat(dfs, axis=0).sort_values(
+            ['timestamp', 'userId'], ascending=[True, True]).reset_index(drop=True)
+        return all_user_tweets_df
+
+    def __wakatigaki(self) -> None:
+        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
+        one_word_tweet_idx = []
+        all_user_tweets_df = self.all_user_tweets_df.copy()
+
+        if self.wakatigaki_path.exists():
+            self.wakatigaki_path.unlink()
+
+        with open(self.wakatigaki_path, mode='a', encoding='utf-8') as f:
+            for tweet in all_user_tweets_df.itertuples():
+                idx, text = tweet.Index, tweet.text
+                neologd_text = neologd.parse(text)
+                wakati_words = [word.split('\t')[0] for word in neologd_text.split('\n')
+                                if len(word.split('\t')) == 6 and word.split('\t')[3] != '記号-一般']
+
+                if len(wakati_words) < 2:
+                    one_word_tweet_idx.append(idx)
+                    continue
+
+                wakati_text = ' '.join(wakati_words)
+                f.write(wakati_text)
+                f.write('\n')
+
+        all_user_tweets_df.drop(index=one_word_tweet_idx, inplace=True)
+        self.all_user_tweets_df = all_user_tweets_df
+
+    def split_data(self, date: dt, save=True, verbose=False) -> Tuple[
+            pd.core.frame.DataFrame, pd.core.frame.DataFrame]:
+        self.change_date(date=date, verbose=False)
+        self.__wakatigaki()
+        all_user_tweets_df = self.all_user_tweets_df.copy()
+
+        date_str = self.date.strftime('%Y%m%d')
+        self.train_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_train.tsv'.format(
+            self.fname, self.n_tweet, date_str))
+        self.test_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_test.tsv'.format(
+            self.fname, self.n_tweet, date_str))
+
+        train_df = all_user_tweets_df[all_user_tweets_df['timestamp'] < date]
+        test_df = all_user_tweets_df[all_user_tweets_df['timestamp'] >= date]
+
+        if save:
+            train_df.to_csv(self.train_df_path, sep='\t', index=True)
+            test_df.to_csv(self.test_df_path, sep='\t', index=True)
+
+        self.train_df = train_df
+        self.test_df = test_df
+
+        with open(self.wakatigaki_path, mode='r', encoding='utf-8') as f:
+            wakati_text = f.readlines()
+        wakati_text_train = ''.join(wakati_text[:train_df.shape[0]])
+
+        with open(self.wakatigaki_path, mode='w', encoding='utf-8') as f:
+            f.write(wakati_text_train)
+
+        if verbose:
+            log('以下パスに分かち書き結果とツイートデータを保存しました')
+            log('分かち書き結果（訓練セット）: {}'.format(self.wakatigaki_path))
+            log('訓練セット: {}'.format(self.train_df_path))
+            log('テストセット: {}'.format(self.test_df_path))
+
+        return train_df, test_df
+
+    def __get_session_data(self, df: pd.core.frame.DataFrame) -> List[Tuple[int, str, str, dt]]:
+        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
+        session_data = []
+
+        for tweet in tqdm(df.itertuples(), total=df.shape[0]):
+            neologd_text = neologd.parse(tweet.text)
+            words = [word.split('\t')[0] for word in neologd_text.split('\n')
+                     if len(word.split('\t')) == 6 and word.split('\t')[3] != '記号-一般']
+
+            tId, uId, timestamp = tweet.Index, tweet.userId, tweet.timestamp
+            tweet_logs = [[tId, uId, word, timestamp] for word in words]
+            session_data.extend(tweet_logs)
+
+        return session_data
+
+    def create_session_df(self, train_test=[True, True], save=True, verbose=False
+                          ) -> Union[pd.core.frame.DataFrame, Tuple[pd.core.frame.DataFrame, pd.core.frame.DataFrame]]:
+        train_df, test_df = self.train_df.copy(), self.test_df.copy()
+        session_df_columns = ['tweetId', 'userId', 'word', 'timestamp']
+
+        if train_test[0]:
+            train_session_data = self.__get_session_data(df=train_df)
+            train_session_df = pd.DataFrame(train_session_data, columns=session_df_columns)
+            self.train_session_df = train_session_df
+        if train_test[1]:
+            test_session_data = self.__get_session_data(df=test_df)
+            test_session_df = pd.DataFrame(test_session_data, columns=session_df_columns)
+            self.test_session_df = test_session_df
+
+        if save:
+            if train_test[0]:
+                train_session_df.to_csv(self.train_session_df_path, index=True)
+                if verbose:
+                    log('以下パスに訓練セットのセッションデータを保存しました')
+                    log(self.train_session_df_path)
+
+            if train_test[1]:
+                test_session_df.to_csv(self.test_session_df_path, index=True)
+                if verbose:
+                    log('以下パスにテストセットのセッションデータを保存しました')
+                    log(self.test_session_df_path)
+
+        if train_test[0] and train_test[1]:
+            return train_session_df, test_session_df
+        elif train_test[0]:
+            return train_session_df
+        elif train_test[1]:
+            return test_session_df
+        else:
+            log('train_testは必ずどちらかはTrueにしてください', exception=True)
+
+    def __calc_session_len(self, df: pd.core.frame.DataFrame) -> Tuple[float, int, int]:
+        sessions_len = np.array([tId_df.shape[0] for _, tId_df in df.groupby('tweetId')])
+        return np.mean(sessions_len), np.max(sessions_len), np.min(sessions_len)
+
+    def show_session_len(self) -> None:
+        if self.train_session_df is not None:
+            train_session_df = self.train_session_df.copy()
+            avg_len, max_len, min_len = self.__calc_session_len(train_session_df)
+            log('訓練セットのセッション長情報')
+            print('Average:{0} / Max:{1} / Min:{2}'.format(avg_len, max_len, min_len))
+        if self.test_session_df is not None:
+            test_session_df = self.test_session_df.copy()
+            avg_len, max_len, min_len = self.__calc_session_len(test_session_df)
+            log('テストセットのセッション長情報')
+            print('Average:{0} / Max:{1} / Min:{2}'.format(avg_len, max_len, min_len))
+
+    def change_date(self, date: dt, verbose=False) -> None:
+        if 'date' in vars(self).keys():
+            prv_date = self.date
+        else:
+            prv_date = None
+        self.date = date
+        date_str = date.strftime('%Y%m%d')
+
+        self.wakatigaki_path = Path(prj_path, 'data/wakatigaki/{0}_{1}_{2}.txt'.format(
+            self.fname, self.n_tweet, date_str))
+        self.train_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_train.tsv'.format(
+            self.fname, self.n_tweet, date_str))
+        self.test_df_path = Path(prj_path, 'data/dataset/{0}_{1}_{2}_test.tsv'.format(
+            self.fname, self.n_tweet, date_str))
+        self.train_session_df_path = Path(prj_path, 'data/session/{}'.format(
+            self.train_df_path.stem + '_session.csv'))
+        self.test_session_df_path = Path(prj_path, 'data/session/{}'.format(
+            self.test_df_path.stem + '_session.csv'))
+
+        if verbose:
+            if prv_date is None:
+                log('訓練・テストセットの分割日を"{}"に設定しました'.format(date_str))
+            else:
+                log('訓練・テストセットの分割日を"{0}"から"{1}"に変更しました'.format(
+                    prv_date.strftime('%Y%m%d'), date_str))
