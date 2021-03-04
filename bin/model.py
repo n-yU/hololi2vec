@@ -52,7 +52,7 @@ def load_params_file(params_path: Path) -> Tuple[
                 log('指定したWord2VecModelのパラメータ"{}"は未定義です'.format(param_name))
         elif model_name == 'prop':
             # ProposalModelパラメータ読み込み
-            if param_name in {'tweet_construct_type', 'user_construct_type', 'tweet_lambda', 'user_context'}:
+            if param_name in {'tweet_construct_type', 'tweet_lambda', 'user_context'}:
                 if param_name == 'tweet_lambda':
                     prop_params[param_name] = float(param_value)
                 elif param_name == 'user_context':
@@ -106,7 +106,7 @@ class Word2VecModel:
             self.loaded_model = True
 
     def __load_model(self) -> word2vec.Word2VecModel:
-        """既存モデルファイルを読み込む
+        """[private]既存モデルファイルを読み込む
 
         Returns:
             word2vec.Word2VecModel: Word2Vecモデルファイル
@@ -119,7 +119,7 @@ class Word2VecModel:
         return model
 
     def __load_params(self) -> Dict[str, Union[int, float]]:
-        """モデルのハイパーパラメータを読み込む
+        """[private]モデルのハイパーパラメータを読み込む
 
         Returns:
             Dict[str, Union[int, float]]: ハイパーパラメータ設定
@@ -238,7 +238,7 @@ class ProposalModel:
                                            w2v_model=self.w2v_model, load=True)
 
     def __get_isLast(self, isTrain: bool) -> Dict[int, bool]:
-        """ツイートの末尾単語のフラグリストを取得する
+        """[private]ツイートの末尾単語のフラグリストを取得する
 
         Args:
             isTrain (bool): Trueで訓練セット，Falseでテストセットを指定
@@ -273,6 +273,11 @@ class ProposalModel:
         return isLast
 
     def learn(self, isTrain=True) -> None:
+        """提案モデルを学習する（各ユーザのセッション・ユーザ表現の構築・更新）
+
+        Args:
+            isTrain (bool, optional): 訓練セットならTrue，テストセットならFalse. Defaults to True.
+        """
         if isTrain:
             # 訓練セットによる学習 -> ユーザ表現集合をリセット
             self.user_reps = dict()
@@ -318,81 +323,157 @@ class ProposalModel:
 
 
 class ProposalUser(Holomem):
-    def __init__(self, userId: str, n_tweet: int, proposal_model: ProposalModel,
-                 load=True, verbose=False, preview=False):
-        super().__init__(userId, n_tweet, load=load, verbose=verbose, preview=preview)
-        self.reps_history = dict()
-        self.tweetIds = [-1]
-        self.tweet_reps = dict()
-        self.user_rep = None
+    """"[Holomem継承]提案モデル用ユーザ
+    """
 
-        self.proposal_model = proposal_model
-        self.w2v_model = proposal_model.w2v_model
-        self.tweet_rep_config = proposal_model.tweet_rep_config
-        self.user_rep_config = proposal_model.user_rep_config
+    def __init__(self, userId: str, proposal_model: ProposalModel, n_tweet: int,
+                 load=True, verbose=False, preview=False):
+        """インスタンス化
+
+        Args:
+            userId (str): ユーザID
+            proposal_model (ProposalModel): 提案モデル
+            n_tweet (int): [Holomem] 取得ツイート数
+            load (bool, optional): [Holomem] 既存データを読み込む. Defaults to True.
+            verbose (bool, optional): [Holomem] 保存パスなどの情報出力. Defaults to False.
+            preview (bool, optional): [Holomem] 取得・読み込んだデータの先頭部表示. Defaults to False.
+        """
+        super().__init__(userId, n_tweet, load=load, verbose=verbose, preview=preview)
+        self.tweetIds = [-1]        # ツイートID
+        self.tweet_reps = dict()    # ツイート表現
+        self.user_rep = None        # ユーザ表現
+
+        self.proposal_model = proposal_model    # 提案モデル
+        self.params = proposal_model.params     # 提案モデルのハイパーパラメータ設定
 
     @property
-    def tweet_rep(self):
-        return self.tweet_reps[-1]
+    def tweet_rep(self) -> np.ndarray:
+        """最新ツイート表現を取得する
+
+        Returns:
+            np.ndarray: 最新ツイート表現
+        """
+        latest_tId = self.tweetIds[-1]
+        latest_tweet_rep = self.tweet_reps[latest_tId].copy()
+        return latest_tweet_rep
 
     def update_reps(self, idx: int, tId: int, word: str, isLast: bool) -> None:
-        self.__construct_session_rep(idx=idx, tId=tId, word=word)
+        """ツイート・ユーザ表現を構築・更新する
+
+        Args:
+            idx (int): ログインデックス
+            tId (int): ツイートID
+            word (str): 単語
+            isLast (bool): ツイート末尾単語ならばTrue
+        """
+        # ツイート表現の構築・更新
+        self.__construct_tweet_rep(idx=idx, tId=tId, word=word)
+
+        # 最新ツイートのツイート表現存在 & ツイート末尾単語 -> ユーザ表現の構築・更新
         if (self.tweet_reps[tId] is not None) and isLast:
             self.__construct_user_rep(idx=idx, tId=tId)
 
     def __get_word_rep(self, word: str) -> Union[np.ndarray, bool]:
+        """単語表現を取得する
+
+        Args:
+            word (str): 単語
+
+        Returns:
+            Union[np.ndarray, bool]: 取得に成功した場合は単語表現，失敗した場合はFalse
+        """
+        # 取得失敗(KeyError) -> 例外は投げずにFalseを返す
         try:
             word_rep = self.w2v_model.get_word_rep(word=word)
         except KeyError:
             word_rep = False
         return word_rep
 
-    def __construct_session_rep(self, idx: int, tId: int, word: str) -> bool:
-        latest_tId = self.sessionIds[-1]
-        word_rep = self.__get_word_rep(word=word)
+    def __construct_tweet_rep(self, tId: int, word: str) -> bool:
+        """ツイート表現を構築・更新する
 
-        if word_rep:
+        Args:
+            tId (int): ツイートID
+            word (str): 単語
+
+        Returns:
+            bool: ツイート表現の構築・更新が成功でTrue
+        """
+        latest_tId = self.tweetIds[-1]              # 最新ツイートID
+        word_rep = self.__get_word_rep(word=word)   # 単語表現
+
+        # 単語表現の取得に失敗 -> ツイート表現の構築・更新に失敗したという意味でFalseを返す
+        if not word_rep:
             return False
 
         if tId != latest_tId:
-            self.sessionIds.append(tId)
-            self.tweet_reps[tId] = word_rep
+            # ツイートIDと最新ツイートIDが異なる -> 新規ツイート表現の構築
+            self.tweetIds.append(tId)
+            self.twseet_reps[tId] = word_rep
         else:
-            session_rep_construct_type = self.proposal_model.rep_construct_types['session']
-            tweet_rep = self.session_reps[latest_tId].copy()
+            # 同じIDのツイート表現が構築済 -> 既存ツイート表現の更新
+            tweet_rep_construct_type = self.proposal_model.params['tweet_construct_type']   # ツイート表現構築法
+            tweet_rep = self.tweet_rep  # 最新ツイート表現
 
-            if session_rep_construct_type == 'cos':
-                cos_sim = calc_similarity(rep_1=tweet_rep, rep_2=word_rep)
+            if tweet_rep_construct_type == 'cos':
+                # ツイート表現構築法: コサイン類似度
+                cos_sim = calc_similarity(rep_1=tweet_rep, rep_2=word_rep)  # ツイート表現と単語表現のコサイン類似度
                 weight = abs(cos_sim)
+                # コサイン類似度の絶対値を重みとする加重平均（ツイート表現が軸）
                 updated_tweet_rep = weight * tweet_rep + (1 - weight) * word_rep
-            elif session_rep_construct_type == 'odd':
-                lmb = self.tweet_rep_config['lmb']
+            elif tweet_rep_construct_type == 'odd':
+                # ツイート表現構築法: 順序差減衰
+                lmb = self.params['tweet_lambda']  # 崩壊定数
                 weight = np.exp(-lmb)
-                updated_tweet_rep = weight * tweet_rep + word_rep
+                updated_tweet_rep = weight * tweet_rep + word_rep  # ツイート表現の係数重みとする加重和
             else:
                 log('指定したセッション表現構築タイプ"{}"は未定義です', exception=True)
 
-            self.session_reps[latest_tId] = updated_tweet_rep
+            self.tweet_reps[latest_tId] = updated_tweet_rep
 
-    def __construct_user_rep(self):
+        return True
+
+    def __construct_user_rep(self, tId: int) -> bool:
+        """ユーザ表現を構築・更新する
+
+        Args:
+            tId (int): ツイートID（最新ツイート表現が構築されているか確認するため）
+
+        Returns:
+            bool: ユーザ表現の構築・更新が成功でTrue
+        """
         latest_tId = self.tweetIds[-1]
-        latest_tweet_rep = self.tweet_reps[latest_tId]
 
-        context_size = self.user_rep_config['context']
-        if context_size < 1:
-            log('コンテキストサイズ（指定値: {}）は1以上の整数を指定してください', exception=True)
-        past_tIds = self.tweetIds[-context_size:]
+        # ツイート表現が未構築（ツイートに含まれるすべての単語表現が取得できなかった） -> ユーザ表現構築・更新失敗
+        if tId != latest_tId:
+            return False
 
-        weighted_rep_sum = np.zeros(self.w2v_model.params['size'])
-        sum_weight = 0.0
+        latest_tweet_rep = self.tweet_reps[latest_tId]  # 最新ツイート表現
 
-        for tId in past_tIds:
-            past_tweet_rep = self.tweet_reps[tId]
-            cos_sim = calc_similarity(rep_1=latest_tweet_rep, rep_2=past_tweet_rep)
-            weight = abs(cos_sim)
+        if self.user_rep is None:
+            # ユーザ表現が未構築 -> 最新ツイート表現で構築
+            self.user_rep = latest_tweet_rep
+        else:
+            # ユーザ表現が構築済み -> コンテキストに含まれるツイート表現を使って更新
+            context_size = self.params['user_context']
+            if context_size < 1:
+                log('コンテキストサイズ（指定値: {}）は1以上の整数を指定してください'.format(context_size),
+                    exception=True)
+            past_tIds = self.tweetIds[-context_size:]   # コンテキストに含まれるツイートID取得
 
-            weighted_rep_sum += weight * past_tweet_rep
-            sum_weight += weight
+            weighted_rep_sum = np.zeros(self.w2v_model.params['size'])  # ツイート表現の加重和
+            sum_weight = 0.0                                            # 重み和
 
-        updated_user_rep = weighted_rep_sum / sum_weight
-        self.user_rep = updated_user_rep
+            for tId in past_tIds:
+                past_tweet_rep = self.tweet_reps[tId]   # コンテキストに含まれるツイート表現
+                # 最新ツイート表現とのコサイン類似度計算
+                cos_sim = calc_similarity(rep_1=latest_tweet_rep, rep_2=past_tweet_rep)
+                weight = abs(cos_sim)
+
+                weighted_rep_sum += weight * past_tweet_rep
+                sum_weight += weight
+
+            updated_user_rep = weighted_rep_sum / sum_weight    # ツイート表現の加重平均計算
+            self.user_rep = updated_user_rep
+
+        return True
