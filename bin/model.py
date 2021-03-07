@@ -105,7 +105,7 @@ class Word2VecModel:
             self.params = self.__load_params()  # パラメータ読み込み
             self.loaded_model = True
 
-    def __load_model(self) -> word2vec.Word2VecModel:
+    def __load_model(self) -> word2vec.Word2Vec:
         """[private]既存モデルファイルを読み込む
 
         Returns:
@@ -152,7 +152,7 @@ class Word2VecModel:
         # モデル訓練
         model = word2vec.Word2Vec(sentences=sentences, window=params['window'], size=params['size'],
                                   sample=params['sample'], negative=params['negative'], min_count=params['min_count'],
-                                  epochs=params['epochs'], sg=1, seed=923, workers=1)
+                                  iter=params['epochs'], sg=1, seed=923, workers=1)
 
         if save:
             model.save(str(self.model_path))

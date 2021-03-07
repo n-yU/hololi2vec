@@ -273,7 +273,8 @@ class Hololive:
         """[private] ツイートテキストの分かち書きを行う
         """
         # MeCab辞書 -> NEologd
-        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
+        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd \
+            -u /usr/local/lib/mecab/dic/userdic/hololive.dic')
         one_word_tweet_idx = []  # テキストが2単語未満のツイートのインデックス
         all_user_tweets_df = self.all_user_tweets_df.copy()
 
@@ -354,7 +355,8 @@ class Hololive:
         Returns:
             List[Tuple[int, str, str, dt]]: セッションデータ形式のリスト
         """
-        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd')
+        neologd = MeCab.Tagger('-Ochasen -d /usr/local/lib/mecab/dic/mecab-ipadic-neologd \
+            -u /usr/local/lib/mecab/dic/userdic/hololive.dic')
         session_data = []
 
         for tweet in tqdm(df.itertuples(), total=df.shape[0]):

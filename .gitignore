@@ -7,3 +7,4 @@ __pycache__/
 
 data/*
 !data/hololive_members.csv
+!data/hololive_dic.csv
