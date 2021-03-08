@@ -105,6 +105,24 @@ class Word2VecModel:
             self.params = self.__load_params()  # パラメータ読み込み
             self.loaded_model = True
 
+    @property
+    def words(self) -> List[str]:
+        """分散表現が構築された単語のリストを取得する
+
+        Returns:
+            List[str]: 構築済み単語リスト
+        """
+        return self.model.wv.index2word
+
+    @property
+    def reps(self) -> np.ndarray:
+        """構築された単語の分散表現をすべて取得する
+
+        Returns:
+            np.ndarray: 構築済み単語分散表現集合
+        """
+        return self.model.wv.syn0
+
     def __load_model(self) -> word2vec.Word2Vec:
         """[private]既存モデルファイルを読み込む
 
@@ -168,7 +186,7 @@ class Word2VecModel:
         """
         log('Word2Vec ハイパーパラメータ')
         for name, value in self.params.items():
-            log(name, value)
+            log('{} {}'.format(name, value))
 
     def get_word_rep(self, word: str) -> np.ndarray:
         """学習された単語のベクトルを取得する
@@ -193,6 +211,32 @@ class Word2VecModel:
             List[Tuple[str, float]]: wordと類似する（単語ベクトル間のコサイン類似度が高い）単語ベストtopn
         """
         similar_words = self.model.most_similar(positive=word, topn=topn)
+        return similar_words
+
+    def calc_similar_words(self, equation: str, topn: int) -> List[Tuple[str, float]]:
+        """単語式から対応する分散表現の加減算で求められる表現と類似する単語を取得する
+
+        Args:
+            equation (str): 単語式（単語と'+','-'で構成された文字列）
+            topn (int): トップ取得数
+
+        Returns:
+            List[Tuple[str, float]]: 加減算表現と類似する単語ベストtopn
+        """
+        positive_words, negative_words = [], []
+
+        # 最初の単語と'+'の後の単語 -> ポジティブ
+        # '-'の後の単語 -> ネガティブ
+        for eq1 in equation.split('+'):
+            posi_nega = eq1.split('-')
+            if len(posi_nega) == 1:
+                positive_words.append(posi_nega[0])
+            else:
+                posi, nega = posi_nega[0], posi_nega[1]
+                positive_words.append(posi)
+                negative_words.append(nega)
+
+        similar_words = self.model.most_similar(positive=positive_words, negative=negative_words, topn=topn)
         return similar_words
 
     def calc_similarity(self, word_1: str, word_2: str) -> float:
