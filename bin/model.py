@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List, Union, Tuple, Dict
 from tqdm.notebook import tqdm as tqdm_nb
+from copy import copy, deepcopy
 
 import numpy as np
 from gensim.models import word2vec
@@ -18,7 +19,7 @@ def log(msg: Union[str, Path], exception=False) -> str:
         msg = str(msg)
 
     if exception:
-        Exception(suffix + msg)
+        raise Exception(suffix + msg)
     else:
         print(suffix + msg)
 
@@ -278,7 +279,7 @@ class ProposalModel:
         # データセットに含まれるユーザ全員分，ProposalUserクラス（提案モデル用のユーザクラス）のインスタンスを生成
         self.users = dict()
         for uId in self.userIds:
-            self.users[uId] = ProposalUser(userId=uId, n_tweet=hololive.n_tweet,
+            self.users[uId] = ProposalUser(userId=uId, proposal_model=self, n_tweet=hololive.n_tweet,
                                            w2v_model=self.w2v_model, load=True)
 
     def __get_isLast(self, isTrain: bool) -> Dict[int, bool]:
@@ -298,7 +299,7 @@ class ProposalModel:
             session_data = self.test
 
         tIds = session_data['tweetId'].values   # ツイートIDリスト
-        indices = session_data.index.to_numpy   # ログインデックスリスト
+        indices = session_data.index.to_numpy()   # ログidxリスト
         isLast = dict()  # フラグリスト
         # 単語数2未満のツイートはデータセットの整形段階で除外しているため，最初のログのフラグは必ずFalse
         isLast[indices[0]] = False
@@ -311,13 +312,13 @@ class ProposalModel:
                 isLast[idx - 1] = True
                 prv_tId = tId
             else:
-                isLast[idx] = False
+                isLast[idx - 1] = False
 
-        isLast[-1] = True   # 1つのツイートがデータセットを跨ぐことはないため，最後のログの単語は必ずツイート末尾単語
+        isLast[indices[-1]] = True   # 1つのツイートがデータセットを跨ぐことはないため，最後のログの単語は必ずツイート末尾単語
         return isLast
 
     def learn(self, isTrain=True) -> None:
-        """提案モデルを学習する（各ユーザのセッション・ユーザ表現の構築・更新）
+        """提案モデルを学習する（各ユーザのツイート・ユーザ表現の構築・更新）
 
         Args:
             isTrain (bool, optional): 訓練セットならTrue，テストセットならFalse. Defaults to True.
@@ -328,7 +329,7 @@ class ProposalModel:
             session_data = self.train
         else:
             # テストセットによる学習
-            if self.user_reps is None:
+            if (self.user_reps is None) or (len(self.user_reps) != self.userIds.shape[0]):
                 # ユーザ表現集合がリセット状態 -> 先に訓練セットを使って学習を行うよう例外を投げる
                 log('テストセットを適用する前に訓練セットを使ってモデルの学習を行ってください', exception=True)
             else:
@@ -338,10 +339,13 @@ class ProposalModel:
 
                 # 訓練セットによる学習が終了した段階での各ユーザ表現を記録しておく
                 start_idx = session_data.index.to_numpy()[0] - 1
+                self.reps_history[start_idx] = dict()
                 for uId in self.userIds:
-                    self.reps_history[start_idx][uId]['userId'] = self.user_reps[uId].user_rep
+                    self.reps_history[start_idx][uId] = dict()
+                    self.reps_history[start_idx][uId]['tweet_rep'] = self.users[uId].tweet_rep
+                    self.reps_history[start_idx][uId]['user_rep'] = self.user_reps[uId]
 
-        isLast = self.__get_isLast(train=isTrain)   # ツイートの末尾単語のフラグリスト取得
+        isLast = self.__get_isLast(isTrain=isTrain)   # ツイートの末尾単語のフラグリスト取得
         for tLog in tqdm_nb(session_data.itertuples(), total=session_data.shape[0]):
             idx, tId, uId, word = tLog.Index, tLog.tweetId, tLog.userId, tLog.word
 
@@ -349,6 +353,9 @@ class ProposalModel:
             try:
                 self.w2v_model.get_word_rep(word)
             except KeyError:
+                # 取得不可＆テストセット -> 前インデックスの記録コピー
+                if not isTrain:
+                    self.reps_history[idx] = deepcopy(self.reps_history[idx - 1])
                 continue
 
             # ユーザuIdのツイート・ユーザ表現の構築・更新
@@ -356,21 +363,21 @@ class ProposalModel:
 
             # テストセット -> ヒストリー記録
             if not isTrain:
-                # ユーザuId以外の各表現は変化しないためコピー
-                self.reps_history[idx] = self.reps_history[idx - 1].copy()
+                # ユーザuId以外の各表現は変化しないためコピー（3層辞書であるため深いコピー！）
+                self.reps_history[idx] = deepcopy(self.reps_history[idx - 1])
 
                 # ユーザuIdのツイート表現は単語分散表現が取得できれば必ず構築・更新されるため記録
-                self.reps_history[idx][uId]['tweetId'] = self.user_reps[uId].session_rep
+                self.reps_history[idx][uId]['tweet_rep'] = self.users[uId].tweet_rep
                 # ツイート末尾単語のフラグが立っている -> ユーザ表現が必ず構築・更新されるため記録
                 if isLast[idx]:
-                    self.reps_history[idx][uId]['userId'] = self.user_reps[uId].user_rep
+                    self.reps_history[idx][uId]['user_rep'] = self.user_reps[uId]
 
 
 class ProposalUser(Holomem):
     """"[Holomem継承]提案モデル用ユーザ
     """
 
-    def __init__(self, userId: str, proposal_model: ProposalModel, n_tweet: int,
+    def __init__(self, userId: str, proposal_model: ProposalModel, n_tweet: int, w2v_model: Word2VecModel,
                  load=True, verbose=False, preview=False):
         """インスタンス化
 
@@ -378,6 +385,7 @@ class ProposalUser(Holomem):
             userId (str): ユーザID
             proposal_model (ProposalModel): 提案モデル
             n_tweet (int): [Holomem] 取得ツイート数
+            w2v_model (Word2VecModel): Word2Vecモデル（読み込みor訓練済み）
             load (bool, optional): [Holomem] 既存データを読み込む. Defaults to True.
             verbose (bool, optional): [Holomem] 保存パスなどの情報出力. Defaults to False.
             preview (bool, optional): [Holomem] 取得・読み込んだデータの先頭部表示. Defaults to False.
@@ -388,6 +396,7 @@ class ProposalUser(Holomem):
         self.user_rep = None        # ユーザ表現
 
         self.proposal_model = proposal_model    # 提案モデル
+        self.w2v_model = w2v_model              # Word2Vecモデル
         self.params = proposal_model.params     # 提案モデルのハイパーパラメータ設定
 
     @property
@@ -398,7 +407,7 @@ class ProposalUser(Holomem):
             np.ndarray: 最新ツイート表現
         """
         latest_tId = self.tweetIds[-1]
-        latest_tweet_rep = self.tweet_reps[latest_tId].copy()
+        latest_tweet_rep = copy(self.tweet_reps[latest_tId])
         return latest_tweet_rep
 
     def update_reps(self, idx: int, tId: int, word: str, isLast: bool) -> None:
@@ -411,11 +420,13 @@ class ProposalUser(Holomem):
             isLast (bool): ツイート末尾単語ならばTrue
         """
         # ツイート表現の構築・更新
-        self.__construct_tweet_rep(idx=idx, tId=tId, word=word)
+        self.__construct_tweet_rep(tId=tId, word=word)
 
         # 最新ツイートのツイート表現存在 & ツイート末尾単語 -> ユーザ表現の構築・更新
         if (self.tweet_reps[tId] is not None) and isLast:
-            self.__construct_user_rep(idx=idx, tId=tId)
+            is_success_construct_user_rep = self.__construct_user_rep(tId=tId)
+            if is_success_construct_user_rep:
+                self.proposal_model.user_reps[self.userId] = self.user_rep
 
     def __get_word_rep(self, word: str) -> Union[np.ndarray, bool]:
         """単語表現を取得する
@@ -447,13 +458,13 @@ class ProposalUser(Holomem):
         word_rep = self.__get_word_rep(word=word)   # 単語表現
 
         # 単語表現の取得に失敗 -> ツイート表現の構築・更新に失敗したという意味でFalseを返す
-        if not word_rep:
+        if isinstance(word_rep, bool) and (not word_rep):
             return False
 
         if tId != latest_tId:
             # ツイートIDと最新ツイートIDが異なる -> 新規ツイート表現の構築
             self.tweetIds.append(tId)
-            self.twseet_reps[tId] = word_rep
+            self.tweet_reps[tId] = word_rep
         else:
             # 同じIDのツイート表現が構築済 -> 既存ツイート表現の更新
             tweet_rep_construct_type = self.proposal_model.params['tweet_construct_type']   # ツイート表現構築法
@@ -508,7 +519,7 @@ class ProposalUser(Holomem):
             weighted_rep_sum = np.zeros(self.w2v_model.params['size'])  # ツイート表現の加重和
             sum_weight = 0.0                                            # 重み和
 
-            for tId in past_tIds:
+            for tId in past_tIds[1:]:
                 past_tweet_rep = self.tweet_reps[tId]   # コンテキストに含まれるツイート表現
                 # 最新ツイート表現とのコサイン類似度計算
                 cos_sim = calc_similarity(rep_1=latest_tweet_rep, rep_2=past_tweet_rep)

@@ -12,7 +12,7 @@ def log(msg: Union[str, Path], exception=False) -> str:
         msg = str(msg)
 
     if exception:
-        Exception(suffix + msg)
+        raise Exception(suffix + msg)
     else:
         print(suffix + msg)
 
