@@ -282,8 +282,8 @@ class ProposalModel:
             self.users[uId] = ProposalUser(userId=uId, proposal_model=self, n_tweet=hololive.n_tweet,
                                            w2v_model=self.w2v_model, load=True)
 
-    def __get_isLast(self, isTrain: bool) -> Dict[int, bool]:
-        """[private]ツイートの末尾単語のフラグリストを取得する
+    def get_isLast(self, isTrain: bool) -> Dict[int, bool]:
+        """ツイートの末尾単語のフラグリストを取得する
 
         Args:
             isTrain (bool): Trueで訓練セット，Falseでテストセットを指定
@@ -342,10 +342,10 @@ class ProposalModel:
                 self.reps_history[start_idx] = dict()
                 for uId in self.userIds:
                     self.reps_history[start_idx][uId] = dict()
-                    self.reps_history[start_idx][uId]['tweet_rep'] = self.users[uId].tweet_rep
-                    self.reps_history[start_idx][uId]['user_rep'] = self.user_reps[uId]
+                    self.reps_history[start_idx][uId]['tweet'] = self.users[uId].tweet_rep
+                    self.reps_history[start_idx][uId]['user'] = self.user_reps[uId]
 
-        isLast = self.__get_isLast(isTrain=isTrain)   # ツイートの末尾単語のフラグリスト取得
+        isLast = self.get_isLast(isTrain=isTrain)   # ツイートの末尾単語のフラグリスト取得
         for tLog in tqdm_nb(session_data.itertuples(), total=session_data.shape[0]):
             idx, tId, uId, word = tLog.Index, tLog.tweetId, tLog.userId, tLog.word
 
@@ -367,10 +367,10 @@ class ProposalModel:
                 self.reps_history[idx] = deepcopy(self.reps_history[idx - 1])
 
                 # ユーザuIdのツイート表現は単語分散表現が取得できれば必ず構築・更新されるため記録
-                self.reps_history[idx][uId]['tweet_rep'] = self.users[uId].tweet_rep
+                self.reps_history[idx][uId]['tweet'] = self.users[uId].tweet_rep
                 # ツイート末尾単語のフラグが立っている -> ユーザ表現が必ず構築・更新されるため記録
                 if isLast[idx]:
-                    self.reps_history[idx][uId]['user_rep'] = self.user_reps[uId]
+                    self.reps_history[idx][uId]['user'] = self.user_reps[uId]
 
 
 class ProposalUser(Holomem):
