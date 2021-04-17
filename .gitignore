@@ -1,10 +1,16 @@
-venv
 mecab-ipadic-neologd
-.DS_Store
 twitter.key
 .ipynb_checkpoints
+
+.DS_Store
 __pycache__/
 
 data/*
 !data/hololive_members.csv
 !data/hololive_dic.csv
+.jupyter
+
+venv
+.devcontainer
+docker-compose.yml
+Dockerfile
